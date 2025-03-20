@@ -16,13 +16,18 @@ limitations under the License.
 package downloader
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"helm.sh/helm/v4/internal/test/ensure"
 	"helm.sh/helm/v4/pkg/cli"
 	"helm.sh/helm/v4/pkg/getter"
+	"helm.sh/helm/v4/pkg/registry"
 	"helm.sh/helm/v4/pkg/repo"
 	"helm.sh/helm/v4/pkg/repo/repotest"
 )
@@ -33,6 +38,8 @@ const (
 )
 
 func TestResolveChartRef(t *testing.T) {
+	ociRegistryUrl := "localhost:5000"
+
 	tests := []struct {
 		name, ref, expect, version string
 		fail                       bool
@@ -58,12 +65,23 @@ func TestResolveChartRef(t *testing.T) {
 		{name: "no repository", ref: "oci://", fail: true},
 		{name: "oci ref", ref: "oci://example.com/helm-charts/nginx", version: "15.4.2", expect: "oci://example.com/helm-charts/nginx:15.4.2"},
 		{name: "oci ref with sha256 and version mismatch", ref: "oci://example.com/install/by/sha:0.1.1@sha256:d234555386402a5867ef0169fefe5486858b6d8d209eaf32fd26d29b16807fd6", version: "0.1.2", fail: true},
+
+		// OCI tests
+		{name: "OCI with version", ref: fmt.Sprintf("oci://%s/u/ocitestuser/oci-dependent-chart", ociRegistryUrl), version: "0.1.0",
+			expect: fmt.Sprintf("oci://%s/u/ocitestuser/oci-dependent-chart:0.1.0", ociRegistryUrl)},
+		{name: "OCI without version fails without registry client", ref: fmt.Sprintf("oci://%s/u/ocitestuser/oci-dependent-chart", ociRegistryUrl),
+			expect: fmt.Sprintf("oci://%s/u/ocitestuser/oci-dependent-chart:0.1.0", ociRegistryUrl), fail: true},
+		{name: "not found", ref: "oci://localhost:9999/nosuchthing/invalid-1.2.3", fail: true},
 	}
+
+	registryClient, err := registry.NewClient()
+	require.NoError(t, err)
 
 	c := ChartDownloader{
 		Out:              os.Stderr,
 		RepositoryConfig: repoConfig,
 		RepositoryCache:  repoCache,
+		RegistryClient:   registryClient,
 		Getters: getter.All(&cli.EnvSettings{
 			RepositoryConfig: repoConfig,
 			RepositoryCache:  repoCache,
@@ -323,6 +341,22 @@ func TestDownloadTo_VerifyLater(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(dest, cname+".prov")); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func TestDownloadTo_MissingRegistryClient(t *testing.T) {
+	c := ChartDownloader{
+		Getters: getter.Providers{
+			getter.Provider{
+				Schemes: []string{"oci"},
+				New:     getter.NewOCIGetter,
+			},
+		},
+	}
+
+	ref := "oci://someurl"
+	version := "latest"
+	_, _, err := c.DownloadTo(ref, version, t.TempDir())
+	assert.Error(t, err)
 }
 
 func TestScanReposForURL(t *testing.T) {
